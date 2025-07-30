@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import TreemapChart from './test0723';
+import TreemapChart from './treemap';
 import axios from 'axios';
 
 
