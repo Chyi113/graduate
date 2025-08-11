@@ -1,9 +1,109 @@
 import React, { useEffect, useRef } from 'react';
 import * as d3 from 'd3';
 
-const TreemapChart = ({ data, width = 900, height = 500 }) => {
-  const ref = useRef();
+const TreemapChart = ({ data, width = 900, height = 500, onRefresh }) => {
+  function createIconButton(group, x, emoji, onClickHandler, isActive, fallbackEmoji = '❓', forceBlack = false) {
+    const buttonGroup = group.append('g')
+      .attr('transform', `translate(${x}, 0)`)
+      .style('cursor', 'pointer')
+      .on('click', onClickHandler);
 
+    // 固定白色邊框
+    const strokeColor = '#fff';
+
+    // ✅ 背景填色（黑或白）
+    const fillColor = forceBlack ? 'black' : (isActive ? '#fff' : 'black');
+
+    // 外圓圈底
+    buttonGroup.append('circle')
+      .attr('r', 14)
+      .attr('fill', fillColor)
+      .attr('opacity', 1)
+      .attr('stroke', strokeColor)
+      .attr('stroke-width', 2);
+
+    // 判斷 emoji 是圖片網址還是文字
+    if (emoji.startsWith('http')) {
+      const image = buttonGroup.append('image')
+        .attr('href', emoji)
+        .attr('x', -10)
+        .attr('y', -10)
+        .attr('width', 20)
+        .attr('height', 20);
+
+      const fallback = buttonGroup.append('text')
+        .attr('class', 'fallback-emoji')
+        .attr('text-anchor', 'middle')
+        .attr('alignment-baseline', 'middle')
+        .attr('font-size', '16px')
+        .attr('fill', isActive ? 'black' : 'white')
+        .attr('opacity', 0)
+        .text(fallbackEmoji);
+
+      image.node().addEventListener('error', () => {
+        image.remove();
+        fallback.attr('opacity', 1);
+      });
+    } else {
+      buttonGroup.append('text')
+        .attr('text-anchor', 'middle')
+        .attr('alignment-baseline', 'middle')
+        .attr('font-size', '16px')
+        .attr('fill', isActive ? 'black' : 'white')
+        .text(emoji);
+    }
+  }
+
+
+  function sendVoteToBackend(t_id, a_id, user_id, type, callback) {
+    console.log('🧪 投票送出資料：', {
+      t_id,
+      a_id,
+      user_id,
+      type
+    });
+
+    const url = 'http://localhost:3001/api/switchvote';
+    const payload = JSON.stringify({ t_id, a_id, user_id, type });
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    })
+      .then(async res => {
+        const parseResponseJson = async () => {
+          try {
+            return await res.json();
+          } catch {
+            return null;
+          }
+        };
+
+        const result = await parseResponseJson();
+
+        if (!res.ok) {
+          const errMsg = result?.error || '操作失敗';
+          alert(errMsg);
+          return;
+        }
+
+        console.log(`${type} 操作成功：`, result);
+        if (callback) callback(result); // ✅ 把回傳的 JSON 傳進來
+      })
+      .catch(err => {
+        console.error('送出錯誤:', err);
+        alert('無法送出請求');
+      });
+  }
+
+
+
+
+
+
+
+  const ref = useRef();
   useEffect(() => {
     if (!data || data.length === 0) return;
 
@@ -11,8 +111,20 @@ const TreemapChart = ({ data, width = 900, height = 500 }) => {
       name: 'root',
       children: data
         .slice()
-        .sort((a, b) => (b.vote_like + b.vote_love) - (a.vote_like + a.vote_love))
+        .sort((a, b) => {
+          const aTotal = a.vote_like + a.vote_love;
+          const bTotal = b.vote_like + b.vote_love;
+
+          if (aTotal !== bTotal) {
+            return bTotal - aTotal; // 比總票數
+          } else {
+            return b.vote_love - a.vote_love; // 同票數時，愛心多的排前面
+          }
+        })
+
         .map(d => ({
+          a_id: d.a_id, 
+          t_id: d.t_id,
           name: d.name_zh || d.name,
           vote_like: d.vote_like,
           vote_love: d.vote_love,
@@ -27,49 +139,52 @@ const TreemapChart = ({ data, width = 900, height = 500 }) => {
     const treemapLayout = d3.treemap()
       .tile(d3.treemapSquarify.ratio(1))
       .size([width, height])
-      .padding(10);
+      .padding(2);
 
     treemapLayout(root);
 
     const svg = d3.select(ref.current);
     svg.selectAll('*').remove();
 
-    // 類別對應顏色
-    const categoryColors = {
-      'History & Religion': '#fae588',
-      'Art & Museums': '#cfe1b9',
-      'Scenic Spots': '#669bbc',
-      'Transport Rides': '#f25c54',
-      default: '#ccc'
-    };
-
-
     const nodes = svg.selectAll('g')
       .data(root.leaves())
       .enter()
       .append('g')
       .attr('transform', d => `translate(${d.x0}, ${d.y0})`)
-      .attr('class', 'hoverable')  // ✅ 加上這個
-      .style("cursor", "pointer");
-
-    // 背景底色（分類顏色）
-    nodes.append('rect')
-      .attr('width', d => d.x1 - d.x0)
-      .attr('height', d => d.y1 - d.y0)
-      .attr('fill', d => categoryColors[d.data.category] || categoryColors.default)
-      .attr('opacity', 0.7)
-      .attr('stroke', 'none'); // 不能顯示明顯邊框
-
+      .attr('class', 'hoverable')
 
     // 加上照片疊在底色上
-    nodes.append('image')
-      .attr('href', d => d.data.photo)  // 確保你的 data 有 photo 欄位
-      .attr('width', d => d.x1 - d.x0)
-      .attr('height', d => d.y1 - d.y0)
-      .attr('preserveAspectRatio', 'xMidYMid slice')
-      .attr('opacity', 0.7)  // 調整照片透明度，露出底色
+    nodes.each(function (d) {
+      const group = d3.select(this);
+      const img = group.append('image')
+        .attr('href', d.data.photo)
+        .attr('width', d.x1 - d.x0)
+        .attr('height', d.y1 - d.y0)
+        .attr('preserveAspectRatio', 'xMidYMid slice')
+        .attr('opacity', 0.8);
+
+      img.node().addEventListener('error', function () {
+        img.attr('href', 'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjUZnZYwmGHr3G3y3kkZVcPc7LqkPQ8hxXeXuhIUmDcR4OujR_KuDWMhL9xZcpyUfVpkA0oLmiYXe4wDB5_LbFaLfTs5pZADkq_dMfcGeUcET3u-rId8JWe549FBKlWJq6KjvXlLpV_osMx/s180-c/odekake_umi.png');
+      });
+    });
 
 
+
+    // 先畫書籤背景（在下層）
+    nodes.append('rect')
+      .attr('class', 'label-background')
+      .attr('x', 0)
+      .attr('y', 6)
+      .attr('width', d => {
+        const name = d.data.name;
+        const fontSize = 12;
+        return Math.min((name.length + 2) * fontSize * 0.9, d.x1 - d.x0 - 3);
+      })
+      .attr('height', 16)
+      .attr('fill', (d, i) => `url(#gradient-border-${i})`)
+      .attr('opacity', 0.85);
+
+    // 再畫文字（在上層）
     nodes.append('text')
       .attr('x', 5)
       .attr('y', 18)
@@ -83,85 +198,261 @@ const TreemapChart = ({ data, width = 900, height = 500 }) => {
       .attr('font-weight', 'bold')
       .attr('pointer-events', 'none');
 
-    const overlay = nodes.append('g')
-      .attr('class', 'overlay-info')
-      .style('display', 'none'); // 初始隱藏
 
-    // 半透明黑底框
-    overlay.append('rect')
-      .attr('width', d => d.x1 - d.x0 - 10)
-      .attr('height', 50)
-      .attr('x', 5)
-      .attr('y', 22)
-      .attr('rx', 6)
-      .attr('ry', 6)
-      .attr('fill', 'rgba(0,0,0,0.6)');
-
-    // 顯示資料文字：like, love, who
-    overlay.append('text')
-      .attr('x', 10)
-      .attr('y', 38)
-      .attr('fill', 'white')
-      .attr('font-size', '11px')
-      .text(d => `👍 ${d.data.vote_like}  ❤️ ${d.data.vote_love}  👥 ${
-        (d.data.who_like?.length || 0) + (d.data.who_love?.length || 0)
-      }`);
-
-    overlay.append('text')
-      .attr('x', 10)
-      .attr('y', 58)
-      .attr('fill', 'white')
-      .attr('font-size', '10px')
-      .text(d => `👍 by: ${(d.data.who_like || []).join(', ')}`);
-
-    overlay.append('text')
-      .attr('x', 10)
-      .attr('y', 73)
-      .attr('fill', 'white')
-      .attr('font-size', '10px')
-      .text(d => `❤️ by: ${(d.data.who_love || []).join(', ')}`);
-    
 
     nodes
       .on('mouseenter', function (event, d) {
-        // 先全部變暗
-        nodes.transition().duration(100).style("opacity", 0.3);
+        d3.select(this).raise();
+        const thisNode = d3.select(this);
+
+        // 還原除了當前之外的所有格子
+        nodes.each(function (nodeDatum) {
+          if (nodeDatum !== d) {
+            d3.select(this)
+              .transition()
+              .duration(100)
+              .style("opacity", 0.3)
+              .attr("transform", `translate(${nodeDatum.x0},${nodeDatum.y0}) scale(1)`);
+          }
+        });
 
         const boxWidth = d.x1 - d.x0;
         const boxHeight = d.y1 - d.y0;
         const scaleFactor = 1.3;
-        const margin = 10; // ✅ 安全邊距
+        const margin = 10;
 
         const scaledWidth = boxWidth * scaleFactor;
         const scaledHeight = boxHeight * scaleFactor;
 
-        // 預設以中心放大後的左上角位置
         let dx = d.x0 - (scaledWidth - boxWidth) / 2;
         let dy = d.y0 - (scaledHeight - boxHeight) / 2;
 
-        // ✅ 邊界檢查 + 加入 margin 限制
         if (dx < margin) dx = margin;
         if (dx + scaledWidth > width - margin) dx = width - margin - scaledWidth;
         if (dy < margin) dy = margin;
         if (dy + scaledHeight > height - margin) dy = height - margin - scaledHeight;
 
-        // ✅ 套用動畫
-        d3.select(this)
+        // 只有目前 node 做放大與資訊顯示
+        thisNode
           .raise()
           .transition()
           .duration(200)
-          .attr("transform", `translate(${dx},${dy}) scale(${scaleFactor})`);
+          .attr("transform", `translate(${dx},${dy}) scale(${scaleFactor})`)
+          .style("opacity", 1);
 
-
-
-        // 顯示圖片和 overlay
-        d3.select(this).select('image')
+        thisNode.select('image')
           .transition().duration(200)
           .attr('opacity', 1);
 
-        d3.select(this).select('.overlay-info')
+        thisNode.select('.overlay-info')
           .style('display', 'block');
+
+        const rectWidth = d.x1 - d.x0;
+        const rectHeight = d.y1 - d.y0;
+
+        // 動態計算左邊的距離
+        let leftOffset = rectWidth * 0.2;
+        if (leftOffset >= 30) leftOffset = 20;
+        if (leftOffset <= 5) leftOffset = 15;
+        if (rectWidth <= 70) leftOffset = rectWidth * 0.25;
+        if (rectWidth >= 100 && rectWidth < 150)
+          leftOffset = rectWidth * 0.16;
+
+        // 距離底部的高度
+        let bottomOffset = rectHeight * 0.1;
+        if (rectHeight >= 100 && rectHeight < 200) bottomOffset = rectHeight * 0.13;
+        if (rectHeight <= 100) bottomOffset = rectHeight * 0.2;
+        if (bottomOffset >= 20) bottomOffset = 20;
+        
+
+        const hoverGroup = thisNode.append('g')
+          .attr('class', 'hover-buttons')
+          .attr('transform', `translate(${leftOffset}, ${rectHeight - bottomOffset})`);
+
+
+        const user_id = 'AAA';
+        const liked = d.data.who_like.includes(user_id);
+        const loved = d.data.who_love.includes(user_id);
+
+        // 😀 like 按鈕
+        createIconButton(
+          hoverGroup,
+          0,
+          'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjYi8pOHIrRfNwCLIxIvaPLqOLr2F4KCqZhptxeW_1YKY3FJ9hNrgdr8MX00uFcbvXLcJP05LhN8nfZUXtv8-4ZXQet-HwF4JmLj97-HjYzTg1swTfNeVhbWwlWG3pNWmOMdRc4g6NtJ9FX/s1600/mark_face_smile.png',
+          function () {
+            sendVoteToBackend(d.data.t_id, d.data.a_id, user_id, 'like', (res) => {
+              if (res.action === 'removed') {
+                // 使用者已點過 like，這次是取消
+                d.data.who_like = [];
+              } else if (res.action === 'switched') {
+                // 使用者從 heart 切換成 like
+                d.data.who_like = [user_id];
+                d.data.who_love = [];
+              }
+              if (onRefresh) onRefresh();  // 重新渲染圖表，建議要有
+            });
+          },
+          liked,    // 是否已按過 like，控制樣式
+          '😀'      // fallback emoji
+        );
+
+
+        // 😍 heart 按鈕
+        createIconButton(
+          hoverGroup,
+          32,  // x 座標偏移，讓按鈕不重疊
+          'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg4527o0Xycu0v0Plvi-VwxKuzrg1YXjZ9AAnRDROfCpYh4LZ4SKhVC0nhDPXIpV5EA5Ha5cVHGhH6A1otPLlJecR0qKwh5Tswqidt1kbMF2tUy3rT3cWXF-OpWKndUN22CkkSE63jNzsLe/s1600/mark_face_laugh.png',
+          function () {
+            sendVoteToBackend(d.data.t_id, d.data.a_id, user_id, 'heart', (res) => {
+              if (res.action === 'removed') {
+                // 使用者已點過 heart，這次是取消
+                d.data.who_love = [];
+              } else if (res.action === 'switched') {
+                // 使用者從 like 切換成 heart
+                d.data.who_love = [user_id];
+                d.data.who_like = [];
+              }
+              if (onRefresh) onRefresh();  // 更新畫面，建議保留
+            });
+          },
+          loved,   // 是否已按過 heart，控制按鈕樣式
+          '😍'     // fallback emoji
+        );
+
+
+
+        let isEyeOpen = false; // 👁️ 記錄目前是否已開啟 overlay
+
+        // ⬇️ 建立眼睛按鈕（初始強制黑底）
+        const eyeBtn = createIconButton(
+          hoverGroup,
+          rectWidth - 40,
+          'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEidUxRG8FVurhwqDWSGumS2AUFtPOXvNMarEuaMeMZZ-2QvQy1HriKlmhWE-tvJtJmb2dtt5Z-2CsuZWxlkg0skCpOAYTyR_YxSNn2sX-7koaPXUZBWiG2GgK6ZNr5t-qR0zQZqepKoh0I/s800/mark_manpu12_hirameki.png',
+          function () {
+            const eyeGroup = d3.select(this);
+            const existing = thisNode.select('.overlay-info');
+
+            if (!existing.empty()) {
+              // 🔴 關閉 overlay
+              existing.remove();
+              isEyeOpen = false;
+
+              eyeGroup.select('circle')
+                .attr('fill', 'black')
+                .attr('stroke', '#ddd');
+              return;
+            }
+
+            // ✅ 開啟 overlay
+            isEyeOpen = true;
+
+            eyeGroup.select('circle')
+              .attr('fill', '#fff')
+              .attr('stroke', '#ddd');
+
+            const overlayWidth = rectWidth;
+            let overlayHeight = 65;
+            let isCollapsed = false;
+            let currentOverlayY = rectHeight - 103;
+
+            const overlay = thisNode.append('g')
+              .attr('class', 'overlay-info')
+              .attr('transform', `translate(0, ${currentOverlayY})`)
+              .call(d3.drag().on('drag', dragged))
+              .raise();
+
+            const overlayBg = overlay.append('rect')
+              .attr('width', overlayWidth)
+              .attr('height', overlayHeight)
+              .attr('fill', '#e9ecef')
+              .attr('opacity', 0.85);
+
+            const infoGroup = overlay.append('g').attr('class', 'info-content');
+
+            function drawInfoContent() {
+              infoGroup.selectAll('*').remove();
+              if (isCollapsed) {
+                overlayHeight = 28;
+                infoGroup.append('text')
+                  .attr('x', 10)
+                  .attr('y', 20)
+                  .attr('fill', 'black')
+                  .attr('font-size', '11px')
+                  .text(`👍 ${d.data.vote_like}  ❤️ ${d.data.vote_love}`);
+              } else {
+                overlayHeight = 65;
+                infoGroup.append('text')
+                  .attr('x', 10)
+                  .attr('y', 20)
+                  .attr('fill', 'black')
+                  .attr('font-size', '11px')
+                  .text(`👍 ${d.data.vote_like}  ❤️ ${d.data.vote_love}`);
+
+                infoGroup.append('text')
+                  .attr('x', 10)
+                  .attr('y', 38)
+                  .attr('fill', 'black')
+                  .attr('font-size', '10px')
+                  .text(`👍：${(d.data.who_like || []).join(', ') || '無'}`);
+
+                infoGroup.append('text')
+                  .attr('x', 10)
+                  .attr('y', 55)
+                  .attr('fill', 'black')
+                  .attr('font-size', '10px')
+                  .text(`❤️：${(d.data.who_love || []).join(', ') || '無'}`);
+              }
+
+              overlayBg.attr('height', overlayHeight);
+            }
+
+            drawInfoContent();
+
+            const toggleBtn = overlay.append('g')
+              .attr('class', 'toggle-btn')
+              .attr('transform', `translate(${overlayWidth - 20}, 15)`)
+              .on('click', () => {
+                isCollapsed = !isCollapsed;
+                drawInfoContent();
+              });
+
+            toggleBtn.append('circle')
+              .attr('r', 9)
+              .attr('fill', '#dee2e6')
+              .attr('stroke', '#6c757d')
+              .attr('stroke-width', 0.5);
+
+            toggleBtn.append('text')
+              .attr('text-anchor', 'middle')
+              .attr('alignment-baseline', 'middle')
+              .attr('font-size', '10px')
+              .attr('fill', '#495057')
+              .text('⎘');
+
+            function dragged(event) {
+              currentOverlayY += event.dy;
+
+              const minY = rectHeight - 103;
+              const maxY = isCollapsed ? rectHeight * 0.72 : rectHeight * 0.57;
+
+              currentOverlayY = Math.max(minY, Math.min(maxY, currentOverlayY));
+              overlay.attr('transform', `translate(0, ${currentOverlayY})`);
+            }
+          },
+          false,  // 初始不是 active
+          '👁️',   // fallback emoji
+          true    // 強制黑底
+        );
+
+
+
+
+
+
+
+
       })
+
       .on('mouseleave', function (event, d) {
         // 還原所有格子的透明度與大小
         nodes.transition().duration(100)
@@ -175,6 +466,9 @@ const TreemapChart = ({ data, width = 900, height = 500 }) => {
 
         d3.select(this).select('.overlay-info')
           .style('display', 'none');
+
+        d3.select(this).select('.hover-buttons').remove();
+        d3.select(this).select('.overlay-info').remove();
       });
 
 
@@ -194,9 +488,9 @@ const TreemapChart = ({ data, width = 900, height = 500 }) => {
 
       // 根據分類給不同的漸層顏色
       switch (d.category) {
-        case 'Art & Museums':
+        case 'Culture & Heritage':
           startColor = '#ffdfba';
-          endColor = '#ffb3ba';
+          endColor = '#ffbf69';
           break;
         case 'Scenic Spots':
           startColor = '#bae1ff';
@@ -206,9 +500,13 @@ const TreemapChart = ({ data, width = 900, height = 500 }) => {
           startColor = '#f9a1bc';
           endColor = '#fbc4ab';
           break;
-        case 'History & Religion':
+        case 'Discovery Spaces':
           startColor = '#dcd6f7';
           endColor = '#a6b1e1';
+          break;
+        case 'Public Squares':
+          startColor = '#c77dff';
+          endColor = '#ffd6ff';
           break;
         default:
           startColor = '#ddd';
@@ -227,20 +525,7 @@ const TreemapChart = ({ data, width = 900, height = 500 }) => {
     });
 
 
-    // 新增邊框的 rect（比圖片整體大一點）
-    nodes.append('rect')
-      .attr('class', 'animated-border')
-      .attr('x', -3)
-      .attr('y', -3)
-      .attr('width', d => d.x1 - d.x0 + 6)
-      .attr('height', d => d.y1 - d.y0 + 6)
-      .attr('fill', 'none')
-      .attr('stroke-width', 3.8)
-      .attr('stroke', (d, i) => `url(#gradient-border-${i})`) // 套用對應漸層
-      //.attr('stroke-opacity', 0.8)
-      .lower(); // 放到最底層，避免蓋到內容
-
-        // 加入動畫函式
+    // 加入動畫函式
     function animateGradient(i) {
       const grad = d3.select(`#gradient-border-${i}`);
       let angle = 0;
